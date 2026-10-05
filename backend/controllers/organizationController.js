@@ -273,13 +273,52 @@ const createOrganizationAdmin = async (req, res) => {
     });
   }
 };
+const getMyOrganization = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+
+    if (!organizationId) {
+      return res.status(400).json({
+        success: false,
+        message: "User is not associated with an organization",
+      });
+    }
+
+    const organization = await Organization.findOne({
+      _id: organizationId,
+    });
+
+    if (!organization) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      organization,
+    });
+  } catch (error) {
+    console.error(
+      "Get My Organization Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error while fetching organization",
+    });
+  }
+};
 module.exports = {
   createOrganization,
   getOrganizations,
   getOrganizationById,
   updateOrganization,
   updateOrganizationStatus,
-  createOrganizationAdmin
+  createOrganizationAdmin,
+  getMyOrganization,
 };
  
 
