@@ -10,6 +10,7 @@ const feedbackFormRoutes = require("./routes/feedbackFormRoutes");
 const questionRoutes = require("./routes/questionRoutes");
 const assignmentRoutes = require("./routes/assignmentRoutes");
 const accessCredentialRoutes = require("./routes/accessCredentialRoutes");
+const responseRoutes = require("./routes/responseRoutes");
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use("/api/feedback-forms", feedbackFormRoutes);
 app.use("/api/questions", questionRoutes);
 app.use("/api/assignments", assignmentRoutes);
 app.use("/api/access-credentials", accessCredentialRoutes);
+app.use("/api/responses", responseRoutes);
 
 
 module.exports = app;
