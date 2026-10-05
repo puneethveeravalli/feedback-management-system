@@ -4,7 +4,7 @@ const {
   createAccessCredential,
   getAccessCredentials,
   getAccessCredentialById,
-  revokeAccessCredential,
+  revokeAccessCredential,validateAccessCredential
 } = require("../controllers/accessCredentialController");
 
 const protect  = require("../middleware/authMiddleware");
@@ -25,7 +25,10 @@ router.get(
   authorize("ORG_ADMIN", "MANAGER"),
   getAccessCredentials
 );
-
+router.post(
+    "/validate",
+    validateAccessCredential
+)
 router.get(
   "/:id",
   protect,

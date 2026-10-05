@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const AccessCredential = require("../models/AccessCredential");
 const Assignment = require("../models/Assignment");
 const Participant = require("../models/Participant");
+const FeedbackForm = require("../models/FeedbackForm");
 
 const createAccessCredential = async (req, res) => {
   try {
@@ -238,11 +239,189 @@ const revokeAccessCredential = async (req, res) => {
     });
   }
 };
+const validateAccessCredential = async (req, res) => {
+  try {
+    const { accessCode, password, uniqueToken } = req.body;
 
+    const organizationId = req.user?.organizationId || null;
+
+    let credential;
+
+    // --------------------------------
+    // 1. ACCESS CODE + PASSWORD
+    // --------------------------------
+    if (accessCode) {
+      credential = await AccessCredential.findOne({
+        accessCode,
+        status: "ACTIVE",
+        ...(organizationId ? { organizationId } : {}),
+      })
+        .select("+password")
+        .populate("assignmentId")
+        .populate("participantId");
+    }
+
+    // --------------------------------
+    // 2. UNIQUE LINK / QR TOKEN
+    // --------------------------------
+    if (!credential && uniqueToken) {
+      credential = await AccessCredential.findOne({
+        uniqueToken,
+        status: "ACTIVE",
+        ...(organizationId ? { organizationId } : {}),
+      })
+        .populate("assignmentId")
+        .populate("participantId");
+    }
+
+    // --------------------------------
+    // 3. Credential not found
+    // --------------------------------
+    if (!credential) {
+      return res.status(401).json({
+        message: "Invalid or expired access credential",
+      });
+    }
+
+    // --------------------------------
+    // 4. Check expiry
+    // --------------------------------
+    if (
+      credential.expiresAt &&
+      new Date() > new Date(credential.expiresAt)
+    ) {
+      credential.status = "EXPIRED";
+      await credential.save();
+
+      return res.status(401).json({
+        message: "Access credential has expired",
+      });
+    }
+
+    // --------------------------------
+    // 5. Validate password
+    // --------------------------------
+    if (credential.accessType === "ACCESS_CODE") {
+      if (!password) {
+        return res.status(400).json({
+          message: "Password is required",
+        });
+      }
+
+      if (credential.password !== password) {
+        return res.status(401).json({
+          message: "Invalid access code or password",
+        });
+      }
+    }
+
+    // --------------------------------
+    // 6. Validate assignment
+    // --------------------------------
+    const assignment = credential.assignmentId;
+
+    if (!assignment || assignment.status !== "ACTIVE") {
+      return res.status(403).json({
+        message: "Assignment is not active",
+      });
+    }
+
+    // --------------------------------
+    // 7. Validate participant
+    // --------------------------------
+    const participant = credential.participantId;
+
+    if (!participant || participant.status !== "ACTIVE") {
+      return res.status(403).json({
+        message: "Participant is not active",
+      });
+    }
+
+    // --------------------------------
+    // 8. Validate form
+    // --------------------------------
+    const form = await FeedbackForm.findOne({
+      _id: assignment.formId,
+      organizationId: credential.organizationId,
+    });
+
+    if (!form) {
+      return res.status(404).json({
+        message: "Feedback form not found",
+      });
+    }
+
+    // --------------------------------
+    // 9. Check form status
+    // --------------------------------
+    if (!["PUBLISHED", "ACTIVE"].includes(form.status)) {
+      return res.status(403).json({
+        message: "Feedback form is not available",
+      });
+    }
+
+    // --------------------------------
+    // 10. Check start date
+    // --------------------------------
+    const now = new Date();
+
+    if (form.startDate && now < new Date(form.startDate)) {
+      return res.status(403).json({
+        message: "Feedback form has not started yet",
+      });
+    }
+
+    // --------------------------------
+    // 11. Check end date
+    // --------------------------------
+    if (form.endDate && now > new Date(form.endDate)) {
+      return res.status(403).json({
+        message: "Feedback form has closed",
+      });
+    }
+
+    // --------------------------------
+    // 12. Update last used
+    // --------------------------------
+    credential.lastUsedAt = new Date();
+
+    await credential.save();
+
+    // --------------------------------
+    // 13. Return access information
+    // --------------------------------
+    res.status(200).json({
+      message: "Access granted",
+
+      access: {
+        assignmentId: assignment._id,
+        participantId: participant._id,
+        formId: form._id,
+        accessType: credential.accessType,
+      },
+
+      form: {
+        id: form._id,
+        title: form.title,
+        description: form.description,
+        responseMode: form.responseMode,
+        allowMultipleResponses: form.allowMultipleResponses,
+        confirmationMessage: form.confirmationMessage,
+      },
+    });
+  } catch (error) {
+    console.error("Validate access credential error:", error);
+
+    res.status(500).json({
+      message: "Server error",
+    });
+  }
+};
 
 module.exports = {
   createAccessCredential,
   getAccessCredentials,
   getAccessCredentialById,
   revokeAccessCredential,
+    validateAccessCredential
 };
