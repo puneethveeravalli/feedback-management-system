@@ -1,7 +1,7 @@
 const express = require("express");
 
 const {
-  createOrganization,getOrganizations,getOrganizationById,updateOrganization,updateOrganizationStatus
+  createOrganization,getOrganizations,getOrganizationById,updateOrganization,updateOrganizationStatus,createOrganizationAdmin
 } = require("../controllers/organizationController");
 
 const protect = require("../middleware/authMiddleware");
@@ -41,6 +41,13 @@ router.patch(
   protect,
   authorize("SUPER_ADMIN"),
   updateOrganizationStatus
+);
+
+router.post(
+  "/:organizationId/admin",
+  protect,
+  authorize("SUPER_ADMIN"),
+  createOrganizationAdmin
 );
 
 module.exports = router;
