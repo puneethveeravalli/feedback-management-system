@@ -7,12 +7,22 @@ const userSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Organization",
       default: null,
+      index: true,
+    },
+
+   
+    participantId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Participant",
+      default: null,
+      index: true,
     },
 
     name: {
       type: String,
       required: true,
       trim: true,
+      maxlength: 150,
     },
 
     email: {
@@ -23,10 +33,18 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
+    
     password: {
       type: String,
       required: true,
       minlength: 6,
+      select: false,
+    },
+
+  
+    plainPassword: {
+      type: String,
+      default: null,
       select: false,
     },
 
@@ -51,6 +69,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ["ACTIVE", "INACTIVE"],
       default: "ACTIVE",
+      index: true,
     },
 
     lastLoginAt: {
@@ -62,15 +81,48 @@ const userSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+
+
 userSchema.pre("save", async function () {
   if (!this.isModified("password")) {
     return;
   }
 
-  this.password = await bcrypt.hash(this.password, 12);
-});
-userSchema.methods.comparePassword = async function (password) {
-  return bcrypt.compare(password, this.password);
-};
+  const salt = await bcrypt.genSalt(12);
 
-module.exports = mongoose.model("User", userSchema);
+  this.password = await bcrypt.hash(
+    this.password,
+    salt
+  );
+});
+
+/*
+|--------------------------------------------------------------------------
+| Password comparison
+|--------------------------------------------------------------------------
+*/
+
+userSchema.methods.comparePassword =
+  async function (candidatePassword) {
+    return bcrypt.compare(
+      candidatePassword,
+      this.password
+    );
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Organization + participant lookup index
+|--------------------------------------------------------------------------
+*/
+
+userSchema.index({
+  organizationId: 1,
+  participantId: 1,
+});
+
+module.exports = mongoose.model(
+  "User",
+  userSchema
+);

@@ -1,9 +1,63 @@
+const mongoose = require("mongoose");
 const FeedbackForm = require("../models/FeedbackForm");
 
-// CREATE FORM
+const ALLOWED_RESPONSE_MODES = ["ANONYMOUS", "IDENTIFIED"];
+
+const ALLOWED_STATUSES = [
+  "DRAFT",
+  "PUBLISHED",
+  "ACTIVE",
+  "CLOSED",
+  "ARCHIVED",
+];
+
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const validateDates = (startDate, endDate) => {
+  if (!startDate || !endDate) {
+    return {
+      valid: false,
+      message: "Start date and end date are required",
+    };
+  }
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return {
+      valid: false,
+      message: "Invalid start date or end date",
+    };
+  }
+
+  if (start >= end) {
+    return {
+      valid: false,
+      message: "Start date must be before end date",
+    };
+  }
+
+  return {
+    valid: true,
+    start,
+    end,
+  };
+};
+
+/**
+ * CREATE FEEDBACK FORM
+ */
 const createFeedbackForm = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
+    const organizationId = req.organizationId;
+
+    if (!organizationId) {
+      return res.status(400).json({
+        success: false,
+        message: "Organization is required",
+      });
+    }
 
     const {
       title,
@@ -15,59 +69,80 @@ const createFeedbackForm = async (req, res) => {
       confirmationMessage,
     } = req.body;
 
-    if (!title) {
+    const cleanTitle = String(title || "").trim();
+    const cleanDescription = String(description || "").trim();
+    const cleanConfirmationMessage = String(
+      confirmationMessage || ""
+    ).trim();
+
+    if (!cleanTitle) {
       return res.status(400).json({
         success: false,
         message: "Form title is required",
       });
     }
 
-    // Validate dates if both are provided
-    if (startDate && endDate) {
-      if (new Date(endDate) <= new Date(startDate)) {
-        return res.status(400).json({
-          success: false,
-          message: "End date must be after start date",
-        });
-      }
+    if (cleanTitle.length > 200) {
+      return res.status(400).json({
+        success: false,
+        message: "Form title cannot exceed 200 characters",
+      });
     }
 
-    // Validate response mode
-    if (
-      responseMode &&
-      !["ANONYMOUS", "IDENTIFIED"].includes(responseMode)
-    ) {
+    if (cleanDescription.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        message: "Description cannot exceed 1000 characters",
+      });
+    }
+
+    if (cleanConfirmationMessage.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: "Confirmation message cannot exceed 500 characters",
+      });
+    }
+
+    if (!ALLOWED_RESPONSE_MODES.includes(responseMode)) {
       return res.status(400).json({
         success: false,
         message: "Invalid response mode",
       });
     }
 
-    // Prevent duplicate form title
+    const dateValidation = validateDates(startDate, endDate);
+
+    if (!dateValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: dateValidation.message,
+      });
+    }
+
     const existingForm = await FeedbackForm.findOne({
       organizationId,
-      title: title.trim(),
+      title: {
+        $regex: `^${cleanTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        $options: "i",
+      },
     });
 
     if (existingForm) {
       return res.status(409).json({
         success: false,
-        message: "A form with this title already exists",
+        message: "A feedback form with this title already exists",
       });
     }
 
     const form = await FeedbackForm.create({
       organizationId,
-      title: title.trim(),
-      description: description?.trim() || "",
-      startDate: startDate || null,
-      endDate: endDate || null,
-      responseMode: responseMode || "IDENTIFIED",
-      allowMultipleResponses:
-        allowMultipleResponses ?? false,
-      confirmationMessage:
-        confirmationMessage?.trim() ||
-        "Thank you for your feedback.",
+      title: cleanTitle,
+      description: cleanDescription,
+      startDate: dateValidation.start,
+      endDate: dateValidation.end,
+      responseMode,
+      allowMultipleResponses: Boolean(allowMultipleResponses),
+      confirmationMessage: cleanConfirmationMessage,
       status: "DRAFT",
     });
 
@@ -81,32 +156,31 @@ const createFeedbackForm = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Failed to create feedback form",
     });
   }
 };
 
-
-// GET ALL FORMS
+/**
+ * GET ALL FEEDBACK FORMS
+ */
 const getFeedbackForms = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
+    const organizationId = req.organizationId;
 
-    const filter = {
-      organizationId,
-    };
-
-    // Optional status filter
-    if (req.query.status) {
-      filter.status = req.query.status;
+    if (!organizationId) {
+      return res.status(400).json({
+        success: false,
+        message: "Organization is required",
+      });
     }
 
-    const forms = await FeedbackForm.find(filter)
-      .sort({ createdAt: -1 });
+    const forms = await FeedbackForm.find({
+      organizationId,
+    }).sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
-      count: forms.length,
       forms,
     });
   } catch (error) {
@@ -114,17 +188,25 @@ const getFeedbackForms = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Failed to fetch feedback forms",
     });
   }
 };
 
-
-// GET FORM BY ID
+/**
+ * GET SINGLE FEEDBACK FORM
+ */
 const getFeedbackFormById = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
     const { id } = req.params;
+    const organizationId = req.organizationId;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid feedback form ID",
+      });
+    }
 
     const form = await FeedbackForm.findOne({
       _id: id,
@@ -147,27 +229,25 @@ const getFeedbackFormById = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Failed to fetch feedback form",
     });
   }
 };
 
-
-// UPDATE FORM
+/**
+ * UPDATE FEEDBACK FORM
+ */
 const updateFeedbackForm = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
     const { id } = req.params;
+    const organizationId = req.organizationId;
 
-    const {
-      title,
-      description,
-      startDate,
-      endDate,
-      responseMode,
-      allowMultipleResponses,
-      confirmationMessage,
-    } = req.body;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid feedback form ID",
+      });
+    }
 
     const form = await FeedbackForm.findOne({
       _id: id,
@@ -181,70 +261,97 @@ const updateFeedbackForm = async (req, res) => {
       });
     }
 
-    // Validate dates
-    const newStartDate =
-      startDate !== undefined
-        ? startDate
-          ? new Date(startDate)
-          : null
-        : form.startDate;
-
-    const newEndDate =
-      endDate !== undefined
-        ? endDate
-          ? new Date(endDate)
-          : null
-        : form.endDate;
-
-    if (
-      newStartDate &&
-      newEndDate &&
-      newEndDate <= newStartDate
-    ) {
+    // Do not allow editing a form that is already closed or archived.
+    if (["CLOSED", "ARCHIVED"].includes(form.status)) {
       return res.status(400).json({
         success: false,
-        message: "End date must be after start date",
+        message: `A ${form.status.toLowerCase()} form cannot be edited`,
       });
     }
 
-    if (title !== undefined) {
-      form.title = title.trim();
+    const {
+      title,
+      description,
+      startDate,
+      endDate,
+      responseMode,
+      allowMultipleResponses,
+      confirmationMessage,
+    } = req.body;
+
+    const cleanTitle = String(title || "").trim();
+    const cleanDescription = String(description || "").trim();
+    const cleanConfirmationMessage = String(
+      confirmationMessage || ""
+    ).trim();
+
+    if (!cleanTitle) {
+      return res.status(400).json({
+        success: false,
+        message: "Form title is required",
+      });
     }
 
-    if (description !== undefined) {
-      form.description = description.trim();
+    if (cleanTitle.length > 200) {
+      return res.status(400).json({
+        success: false,
+        message: "Form title cannot exceed 200 characters",
+      });
     }
 
-    if (startDate !== undefined) {
-      form.startDate = startDate || null;
+    if (cleanDescription.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        message: "Description cannot exceed 1000 characters",
+      });
     }
 
-    if (endDate !== undefined) {
-      form.endDate = endDate || null;
+    if (cleanConfirmationMessage.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: "Confirmation message cannot exceed 500 characters",
+      });
     }
 
-    if (responseMode !== undefined) {
-      if (
-        !["ANONYMOUS", "IDENTIFIED"].includes(responseMode)
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid response mode",
-        });
-      }
-
-      form.responseMode = responseMode;
+    if (!ALLOWED_RESPONSE_MODES.includes(responseMode)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid response mode",
+      });
     }
 
-    if (allowMultipleResponses !== undefined) {
-      form.allowMultipleResponses =
-        allowMultipleResponses;
+    const dateValidation = validateDates(startDate, endDate);
+
+    if (!dateValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: dateValidation.message,
+      });
     }
 
-    if (confirmationMessage !== undefined) {
-      form.confirmationMessage =
-        confirmationMessage.trim();
+    const duplicateForm = await FeedbackForm.findOne({
+      _id: { $ne: id },
+      organizationId,
+      title: {
+        $regex: `^${cleanTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        $options: "i",
+      },
+    });
+
+    if (duplicateForm) {
+      return res.status(409).json({
+        success: false,
+        message: "A feedback form with this title already exists",
+      });
     }
+
+    form.title = cleanTitle;
+    form.description = cleanDescription;
+    form.startDate = dateValidation.start;
+    form.endDate = dateValidation.end;
+    form.responseMode = responseMode;
+    form.allowMultipleResponses = Boolean(allowMultipleResponses);
+    form.confirmationMessage = cleanConfirmationMessage;
 
     await form.save();
 
@@ -258,31 +365,31 @@ const updateFeedbackForm = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Failed to update feedback form",
     });
   }
 };
 
-
-// UPDATE FORM STATUS
+/**
+ * UPDATE FORM STATUS
+ */
 const updateFeedbackFormStatus = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
     const { id } = req.params;
     const { status } = req.body;
+    const organizationId = req.organizationId;
 
-    const allowedStatuses = [
-      "DRAFT",
-      "PUBLISHED",
-      "ACTIVE",
-      "CLOSED",
-      "ARCHIVED",
-    ];
-
-    if (!allowedStatuses.includes(status)) {
+    if (!isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid form status",
+        message: "Invalid feedback form ID",
+      });
+    }
+
+    if (!ALLOWED_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid feedback form status",
       });
     }
 
@@ -298,28 +405,79 @@ const updateFeedbackFormStatus = async (req, res) => {
       });
     }
 
-    form.status = status;
+    const now = new Date();
 
+    /*
+      Schedule-aware status validation.
+
+      PUBLISHED:
+      Form is configured and ready for its scheduled lifecycle.
+
+      ACTIVE:
+      Form can collect responses only when current time
+      is within the configured start/end period.
+
+      CLOSED:
+      Form collection has ended.
+
+      ARCHIVED:
+      Form is retained for historical/reference purposes.
+    */
+
+    if (status === "ACTIVE") {
+      if (now < new Date(form.startDate)) {
+        return res.status(400).json({
+          success: false,
+          message: "Form cannot be activated before its start date",
+        });
+      }
+
+      if (now >= new Date(form.endDate)) {
+        return res.status(400).json({
+          success: false,
+          message: "Form cannot be activated after its end date",
+        });
+      }
+    }
+
+    if (status === "CLOSED" && now < new Date(form.startDate)) {
+      return res.status(400).json({
+        success: false,
+        message: "A form cannot be closed before its start date",
+      });
+    }
+
+    if (status === "PUBLISHED" && form.status === "ARCHIVED") {
+      return res.status(400).json({
+        success: false,
+        message: "An archived form cannot be published",
+      });
+    }
+
+    if (status === "ACTIVE" && form.status === "ARCHIVED") {
+      return res.status(400).json({
+        success: false,
+        message: "An archived form cannot be activated",
+      });
+    }
+
+    form.status = status;
     await form.save();
 
     return res.status(200).json({
       success: true,
-      message: "Feedback form status updated successfully",
+      message: `Feedback form ${status.toLowerCase()} successfully`,
       form,
     });
   } catch (error) {
-    console.error(
-      "Update feedback form status error:",
-      error
-    );
+    console.error("Update feedback form status error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Failed to update feedback form status",
     });
   }
 };
-
 
 module.exports = {
   createFeedbackForm,

@@ -16,35 +16,35 @@ const router = express.Router();
 router.post(
   "/",
   protect,
-  authorize("ORG_ADMIN"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN"),
   createGroup
 );
 
 router.get(
   "/",
   protect,
-  authorize("ORG_ADMIN", "MANAGER"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN", "MANAGER"),
   getGroups
 );
 
 router.get(
   "/:id",
   protect,
-  authorize("ORG_ADMIN", "MANAGER"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN", "MANAGER"),
   getGroupById
 );
 
 router.patch(
   "/:id",
   protect,
-  authorize("ORG_ADMIN"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN"),
   updateGroup
 );
 
 router.patch(
   "/:id/status",
   protect,
-  authorize("ORG_ADMIN"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN"),
   updateGroupStatus
 );
 

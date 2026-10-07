@@ -16,35 +16,35 @@ const router = express.Router();
 router.post(
   "/",
   protect,
-  authorize("ORG_ADMIN"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN"),
   createDepartment
 );
 
 router.get(
   "/",
   protect,
-  authorize("ORG_ADMIN", "MANAGER"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN", "MANAGER"),
   getDepartments
 );
 
 router.get(
   "/:id",
   protect,
-  authorize("ORG_ADMIN", "MANAGER"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN", "MANAGER"),
   getDepartmentById
 );
 
 router.patch(
   "/:id",
   protect,
-  authorize("ORG_ADMIN"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN"),
   updateDepartment
 );
 
 router.patch(
   "/:id/status",
   protect,
-  authorize("ORG_ADMIN"),
+  authorize("SUPER_ADMIN", "ORG_ADMIN"),
   updateDepartmentStatus
 );
 

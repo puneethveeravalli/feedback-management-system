@@ -20,6 +20,24 @@ const responseSchema = new mongoose.Schema(
       required: true,
     },
 
+    /*
+     * This connects a submission to the validated
+     * eligibility credential.
+     *
+     * It is NOT exposed through normal analytics.
+     */
+    credentialId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AccessCredential",
+      required: true,
+      select: false,
+    },
+
+    /*
+     * For IDENTIFIED feedback only.
+     *
+     * Anonymous feedback stores null here.
+     */
     participantId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Participant",
@@ -38,7 +56,10 @@ const responseSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["DRAFT", "SUBMITTED"],
+      enum: [
+        "DRAFT",
+        "SUBMITTED",
+      ],
       default: "SUBMITTED",
     },
   },
@@ -50,7 +71,16 @@ const responseSchema = new mongoose.Schema(
 responseSchema.index({
   organizationId: 1,
   assignmentId: 1,
+  credentialId: 1,
+});
+
+responseSchema.index({
+  organizationId: 1,
+  formId: 1,
   participantId: 1,
 });
 
-module.exports = mongoose.model("Response", responseSchema);
+module.exports = mongoose.model(
+  "Response",
+  responseSchema
+);

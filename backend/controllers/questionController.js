@@ -1,3 +1,5 @@
+const mongoose = require("mongoose");
+
 const Question = require("../models/Question");
 const FeedbackForm = require("../models/FeedbackForm");
 
@@ -19,11 +21,53 @@ const optionBasedTypes = [
   "DROPDOWN",
 ];
 
+const isValidObjectId = (id) => {
+  return mongoose.Types.ObjectId.isValid(id);
+};
 
-// CREATE QUESTION
-const createQuestion = async (req, res) => {
+const isNonEmptyString = (value) => {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0
+  );
+};
+
+const cleanOptions = (options) => {
+  if (!Array.isArray(options)) {
+    return [];
+  }
+
+  return options
+    .map((option) =>
+      String(option).trim()
+    )
+    .filter(Boolean);
+};
+
+const hasDuplicateOptions = (
+  options
+) => {
+  const normalized = options.map(
+    (option) =>
+      option.toLowerCase()
+  );
+
+  return (
+    new Set(normalized).size !==
+    normalized.length
+  );
+};
+
+/**
+ * CREATE QUESTION
+ */
+const createQuestion = async (
+  req,
+  res
+) => {
   try {
-    const organizationId = req.user.organizationId;
+    const organizationId =
+      req.organizationId;
 
     const {
       formId,
@@ -36,152 +80,336 @@ const createQuestion = async (req, res) => {
       maxValue,
     } = req.body;
 
-    if (!formId || !questionText || !type) {
+    if (!organizationId) {
       return res.status(400).json({
         success: false,
-        message: "formId, questionText and type are required",
+        message:
+          "Organization is required",
       });
     }
 
-    // Validate question type
-    if (!allowedQuestionTypes.includes(type)) {
+    if (!formId) {
       return res.status(400).json({
         success: false,
-        message: "Invalid question type",
+        message:
+          "formId is required",
       });
     }
 
-    // Make sure form belongs to current organization
-    const form = await FeedbackForm.findOne({
-      _id: formId,
-      organizationId,
-    });
-
-    if (!form) {
+    if (
+      !isValidObjectId(formId)
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid feedback form",
+        message:
+          "Invalid feedback form ID",
       });
     }
 
-    // Choice questions must have options
-    if (optionBasedTypes.includes(type)) {
-      if (!Array.isArray(options) || options.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Options are required for this question type",
-        });
-      }
-    }
-
-    // Non-choice questions should not require options
-    let finalOptions = [];
-
-    if (optionBasedTypes.includes(type)) {
-      finalOptions = options
-        .map((option) => String(option).trim())
-        .filter(Boolean);
-
-      if (finalOptions.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "At least one valid option is required",
-        });
-      }
-    }
-
-    // Validate numeric rating
-    if (type === "NUMERIC_RATING") {
-      if (
-        minValue === undefined ||
-        maxValue === undefined
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "minValue and maxValue are required for numeric rating",
-        });
-      }
-
-      if (Number(minValue) >= Number(maxValue)) {
-        return res.status(400).json({
-          success: false,
-          message: "maxValue must be greater than minValue",
-        });
-      }
-    }
-
-    // Check duplicate order
-    const existingOrder = await Question.findOne({
-      organizationId,
-      formId,
-      order: Number(order || 1),
-    });
-
-    if (existingOrder) {
-      return res.status(409).json({
+    if (
+      !isNonEmptyString(
+        questionText
+      )
+    ) {
+      return res.status(400).json({
         success: false,
-        message: "A question already exists at this order",
+        message:
+          "Question text is required",
       });
     }
 
-    const question = await Question.create({
-      organizationId,
-      formId,
-      questionText: questionText.trim(),
-      type,
-      options: finalOptions,
-      required: required ?? false,
-      order: Number(order || 1),
-      minValue:
-        type === "NUMERIC_RATING"
-          ? Number(minValue)
-          : null,
-      maxValue:
-        type === "NUMERIC_RATING"
-          ? Number(maxValue)
-          : null,
-    });
+    const cleanQuestionText =
+      questionText.trim();
 
-    return res.status(201).json({
-      success: true,
-      message: "Question created successfully",
-      question,
-    });
-  } catch (error) {
-    console.error("Create question error:", error);
+    if (
+      cleanQuestionText.length >
+      500
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Question text cannot exceed 500 characters",
+      });
+    }
 
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-};
+    if (
+      !allowedQuestionTypes.includes(
+        type
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid question type",
+      });
+    }
 
-
-// GET QUESTIONS FOR FORM
-const getQuestions = async (req, res) => {
-  try {
-    const organizationId = req.user.organizationId;
-    const { formId } = req.params;
-
-    // Validate form belongs to organization
-    const form = await FeedbackForm.findOne({
-      _id: formId,
-      organizationId,
-    });
+    /**
+     * FORM VALIDATION
+     */
+    const form =
+      await FeedbackForm.findOne({
+        _id: formId,
+        organizationId,
+      });
 
     if (!form) {
       return res.status(404).json({
         success: false,
-        message: "Feedback form not found",
+        message:
+          "Feedback form not found",
       });
     }
 
-    const questions = await Question.find({
-      organizationId,
-      formId,
-    }).sort({ order: 1 });
+    /**
+     * Do not modify forms that are
+     * already closed or archived.
+     */
+    if (
+      form.status === "CLOSED" ||
+      form.status === "ARCHIVED"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Questions cannot be added to a closed or archived form",
+      });
+    }
+
+    /**
+     * ORDER VALIDATION
+     */
+    const numericOrder =
+      Number(order);
+
+    if (
+      !Number.isInteger(
+        numericOrder
+      ) ||
+      numericOrder < 1
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Order must be a whole number greater than 0",
+      });
+    }
+
+    /**
+     * OPTION VALIDATION
+     */
+    let finalOptions = [];
+
+    if (
+      optionBasedTypes.includes(
+        type
+      )
+    ) {
+      finalOptions =
+        cleanOptions(options);
+
+      if (
+        finalOptions.length < 2
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "At least two options are required for this question type",
+        });
+      }
+
+      if (
+        finalOptions.some(
+          (option) =>
+            option.length > 200
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Each option cannot exceed 200 characters",
+        });
+      }
+
+      if (
+        hasDuplicateOptions(
+          finalOptions
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Options must be unique",
+        });
+      }
+    }
+
+    /**
+     * NUMERIC RATING
+     */
+    let finalMinValue = null;
+    let finalMaxValue = null;
+
+    if (
+      type === "NUMERIC_RATING"
+    ) {
+      const numericMin =
+        Number(minValue);
+
+      const numericMax =
+        Number(maxValue);
+
+      if (
+        !Number.isFinite(
+          numericMin
+        ) ||
+        !Number.isFinite(
+          numericMax
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid minimum and maximum values are required",
+        });
+      }
+
+      if (
+        numericMin >=
+        numericMax
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Maximum value must be greater than minimum value",
+        });
+      }
+
+      finalMinValue =
+        numericMin;
+
+      finalMaxValue =
+        numericMax;
+    }
+
+    /**
+     * STAR RATING
+     *
+     * Requirements support Star Rating.
+     * We standardize it to 1–5.
+     */
+    if (
+      type === "STAR_RATING"
+    ) {
+      finalMinValue = 1;
+      finalMaxValue = 5;
+    }
+
+    /**
+     * DUPLICATE ORDER
+     */
+    const existingOrder =
+      await Question.findOne({
+        organizationId,
+        formId,
+        order: numericOrder,
+      });
+
+    if (existingOrder) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "A question already exists at this display order",
+      });
+    }
+
+    /**
+     * CREATE
+     */
+    const question =
+      await Question.create({
+        organizationId,
+        formId,
+        questionText:
+          cleanQuestionText,
+        type,
+        options: finalOptions,
+        required:
+          required === true ||
+          required === "true",
+        order: numericOrder,
+        minValue:
+          finalMinValue,
+        maxValue:
+          finalMaxValue,
+        status: "ACTIVE",
+      });
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Question created successfully",
+      question,
+    });
+  } catch (error) {
+    console.error(
+      "Create question error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to create question",
+    });
+  }
+};
+
+/**
+ * GET QUESTIONS FOR FORM
+ */
+const getQuestions = async (
+  req,
+  res
+) => {
+  try {
+    const organizationId =
+      req.organizationId;
+
+    const { formId } =
+      req.params;
+
+    if (
+      !isValidObjectId(formId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid feedback form ID",
+      });
+    }
+
+    const form =
+      await FeedbackForm.findOne({
+        _id: formId,
+        organizationId,
+      });
+
+    if (!form) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Feedback form not found",
+      });
+    }
+
+    const questions =
+      await Question.find({
+        organizationId,
+        formId,
+      }).sort({
+        order: 1,
+      });
 
     return res.status(200).json({
       success: true,
@@ -189,31 +417,54 @@ const getQuestions = async (req, res) => {
       questions,
     });
   } catch (error) {
-    console.error("Get questions error:", error);
+    console.error(
+      "Get questions error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message:
+        "Failed to fetch questions",
     });
   }
 };
 
-
-// GET SINGLE QUESTION
-const getQuestionById = async (req, res) => {
+/**
+ * GET SINGLE QUESTION
+ */
+const getQuestionById = async (
+  req,
+  res
+) => {
   try {
-    const organizationId = req.user.organizationId;
-    const { id } = req.params;
+    const organizationId =
+      req.organizationId;
 
-    const question = await Question.findOne({
-      _id: id,
-      organizationId,
-    });
+    const { id } =
+      req.params;
+
+    if (
+      !isValidObjectId(id)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid question ID",
+      });
+    }
+
+    const question =
+      await Question.findOne({
+        _id: id,
+        organizationId,
+      });
 
     if (!question) {
       return res.status(404).json({
         success: false,
-        message: "Question not found",
+        message:
+          "Question not found",
       });
     }
 
@@ -222,21 +473,87 @@ const getQuestionById = async (req, res) => {
       question,
     });
   } catch (error) {
-    console.error("Get question error:", error);
+    console.error(
+      "Get question error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message:
+        "Failed to fetch question",
     });
   }
 };
 
-
-// UPDATE QUESTION
-const updateQuestion = async (req, res) => {
+/**
+ * UPDATE QUESTION
+ */
+const updateQuestion = async (
+  req,
+  res
+) => {
   try {
-    const organizationId = req.user.organizationId;
-    const { id } = req.params;
+    const organizationId =
+      req.organizationId;
+
+    const { id } =
+      req.params;
+
+    if (
+      !isValidObjectId(id)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid question ID",
+      });
+    }
+
+    const question =
+      await Question.findOne({
+        _id: id,
+        organizationId,
+      });
+
+    if (!question) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Question not found",
+      });
+    }
+
+    /**
+     * FORM OWNERSHIP
+     */
+    const form =
+      await FeedbackForm.findOne({
+        _id: question.formId,
+        organizationId,
+      });
+
+    if (!form) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Feedback form not found",
+      });
+    }
+
+    /**
+     * CLOSED / ARCHIVED
+     */
+    if (
+      form.status === "CLOSED" ||
+      form.status === "ARCHIVED"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Questions cannot be edited for a closed or archived form",
+      });
+    }
 
     const {
       questionText,
@@ -248,66 +565,171 @@ const updateQuestion = async (req, res) => {
       maxValue,
     } = req.body;
 
-    const question = await Question.findOne({
-      _id: id,
-      organizationId,
-    });
-
-    if (!question) {
-      return res.status(404).json({
-        success: false,
-        message: "Question not found",
-      });
-    }
-
+    /**
+     * DETERMINE FINAL VALUES
+     */
     const newType =
-      type !== undefined ? type : question.type;
+      type !== undefined
+        ? type
+        : question.type;
 
-    if (!allowedQuestionTypes.includes(newType)) {
+    const newQuestionText =
+      questionText !== undefined
+        ? String(
+            questionText
+          ).trim()
+        : question.questionText;
+
+    const newOrder =
+      order !== undefined
+        ? Number(order)
+        : question.order;
+
+    /**
+     * QUESTION TEXT
+     */
+    if (
+      !isNonEmptyString(
+        newQuestionText
+      )
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid question type",
+        message:
+          "Question text is required",
       });
     }
 
-    if (questionText !== undefined) {
-      question.questionText = questionText.trim();
+    if (
+      newQuestionText.length >
+      500
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Question text cannot exceed 500 characters",
+      });
     }
 
-    if (type !== undefined) {
-      question.type = type;
+    /**
+     * TYPE
+     */
+    if (
+      !allowedQuestionTypes.includes(
+        newType
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid question type",
+      });
     }
 
-    if (required !== undefined) {
-      question.required = required;
+    /**
+     * ORDER
+     */
+    if (
+      !Number.isInteger(
+        newOrder
+      ) ||
+      newOrder < 1
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Order must be a whole number greater than 0",
+      });
     }
 
-    if (order !== undefined) {
-      question.order = Number(order);
+    /**
+     * DUPLICATE ORDER
+     */
+    const duplicateOrder =
+      await Question.findOne({
+        organizationId,
+        formId:
+          question.formId,
+        order: newOrder,
+        _id: {
+          $ne: question._id,
+        },
+      });
+
+    if (duplicateOrder) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "A question already exists at this display order",
+      });
     }
 
-    if (optionBasedTypes.includes(newType)) {
-      const newOptions =
-        options !== undefined
-          ? options
-              .map((option) => String(option).trim())
-              .filter(Boolean)
-          : question.options;
+    /**
+     * OPTIONS
+     */
+    let finalOptions = [];
 
-      if (newOptions.length === 0) {
+    if (
+      optionBasedTypes.includes(
+        newType
+      )
+    ) {
+      if (
+        options === undefined
+      ) {
+        finalOptions =
+          question.options || [];
+      } else {
+        finalOptions =
+          cleanOptions(options);
+      }
+
+      if (
+        finalOptions.length < 2
+      ) {
         return res.status(400).json({
           success: false,
           message:
-            "At least one option is required",
+            "At least two options are required for this question type",
         });
       }
 
-      question.options = newOptions;
-    } else {
-      question.options = [];
+      if (
+        finalOptions.some(
+          (option) =>
+            option.length > 200
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Each option cannot exceed 200 characters",
+        });
+      }
+
+      if (
+        hasDuplicateOptions(
+          finalOptions
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Options must be unique",
+        });
+      }
     }
 
-    if (newType === "NUMERIC_RATING") {
+    /**
+     * NUMERIC RATING
+     */
+    let finalMinValue = null;
+    let finalMaxValue = null;
+
+    if (
+      newType ===
+      "NUMERIC_RATING"
+    ) {
       const newMin =
         minValue !== undefined
           ? Number(minValue)
@@ -319,87 +741,199 @@ const updateQuestion = async (req, res) => {
           : question.maxValue;
 
       if (
-        newMin === null ||
-        newMax === null ||
+        !Number.isFinite(
+          newMin
+        ) ||
+        !Number.isFinite(
+          newMax
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid minimum and maximum values are required",
+        });
+      }
+
+      if (
         newMin >= newMax
       ) {
         return res.status(400).json({
           success: false,
           message:
-            "Valid minValue and maxValue are required",
+            "Maximum value must be greater than minimum value",
         });
       }
 
-      question.minValue = newMin;
-      question.maxValue = newMax;
-    } else {
-      question.minValue = null;
-      question.maxValue = null;
+      finalMinValue =
+        newMin;
+
+      finalMaxValue =
+        newMax;
     }
+
+    /**
+     * STAR RATING
+     */
+    if (
+      newType ===
+      "STAR_RATING"
+    ) {
+      finalMinValue = 1;
+      finalMaxValue = 5;
+    }
+
+    /**
+     * SAVE
+     */
+    question.questionText =
+      newQuestionText;
+
+    question.type =
+      newType;
+
+    question.options =
+      finalOptions;
+
+    question.required =
+      required !== undefined
+        ? Boolean(required)
+        : question.required;
+
+    question.order =
+      newOrder;
+
+    question.minValue =
+      finalMinValue;
+
+    question.maxValue =
+      finalMaxValue;
 
     await question.save();
 
     return res.status(200).json({
       success: true,
-      message: "Question updated successfully",
+      message:
+        "Question updated successfully",
       question,
     });
   } catch (error) {
-    console.error("Update question error:", error);
+    console.error(
+      "Update question error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message:
+        "Failed to update question",
     });
   }
 };
 
+/**
+ * UPDATE QUESTION STATUS
+ */
+const updateQuestionStatus =
+  async (req, res) => {
+    try {
+      const organizationId =
+        req.organizationId;
 
-// UPDATE QUESTION STATUS
-const updateQuestionStatus = async (req, res) => {
-  try {
-    const organizationId = req.user.organizationId;
-    const { id } = req.params;
-    const { status } = req.body;
+      const { id } =
+        req.params;
 
-    if (!["ACTIVE", "INACTIVE"].includes(status)) {
-      return res.status(400).json({
+      const { status } =
+        req.body;
+
+      if (
+        !isValidObjectId(id)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid question ID",
+        });
+      }
+
+      if (
+        !["ACTIVE", "INACTIVE"].includes(
+          status
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Status must be ACTIVE or INACTIVE",
+        });
+      }
+
+      const question =
+        await Question.findOne({
+          _id: id,
+          organizationId,
+        });
+
+      if (!question) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Question not found",
+        });
+      }
+
+      /**
+       * FORM OWNERSHIP / LIFECYCLE
+       */
+      const form =
+        await FeedbackForm.findOne({
+          _id: question.formId,
+          organizationId,
+        });
+
+      if (!form) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Feedback form not found",
+        });
+      }
+
+      if (
+        form.status === "CLOSED" ||
+        form.status === "ARCHIVED"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Question status cannot be changed for a closed or archived form",
+        });
+      }
+
+      question.status =
+        status;
+
+      await question.save();
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Question status updated successfully",
+        question,
+      });
+    } catch (error) {
+      console.error(
+        "Update question status error:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
-        message: "Status must be ACTIVE or INACTIVE",
+        message:
+          "Failed to update question status",
       });
     }
-
-    const question = await Question.findOne({
-      _id: id,
-      organizationId,
-    });
-
-    if (!question) {
-      return res.status(404).json({
-        success: false,
-        message: "Question not found",
-      });
-    }
-
-    question.status = status;
-
-    await question.save();
-
-    return res.status(200).json({
-      success: true,
-      message: "Question status updated successfully",
-      question,
-    });
-  } catch (error) {
-    console.error("Update question status error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-};
-
+  };
 
 module.exports = {
   createQuestion,

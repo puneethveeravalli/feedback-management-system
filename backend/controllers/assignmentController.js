@@ -1,349 +1,176 @@
+const mongoose = require("mongoose");
 const Assignment = require("../models/Assignment");
 const FeedbackForm = require("../models/FeedbackForm");
 const Group = require("../models/Group");
-const Target = require("../models/Target");
 
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// CREATE ASSIGNMENT
+const requireOrganization = (req, res) => {
+  if (!req.organizationId) {
+    res.status(400).json({ success: false, message: "Select an organization before managing assignments." });
+    return null;
+  }
+  return req.organizationId;
+};
+
+const getId = (value) => (value && typeof value === "object" ? value._id : value);
+
+const validateAssignment = async ({ organizationId, formId, groupId }) => {
+  if (!isValidObjectId(formId) || !isValidObjectId(groupId)) {
+    return { error: "Invalid feedback form or group ID" };
+  }
+
+  const [form, group] = await Promise.all([
+    FeedbackForm.findOne({ _id: formId, organizationId }),
+    Group.findOne({ _id: groupId, organizationId }),
+  ]);
+
+  if (!form) return { error: "Feedback form not found" };
+  if (["CLOSED", "ARCHIVED"].includes(form.status)) return { error: "Closed or archived forms cannot be assigned" };
+  if (!group) return { error: "Group not found" };
+  if (group.status !== "ACTIVE") return { error: "Only active groups can be assigned" };
+
+  return { form, group };
+};
+
 const createAssignment = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
+    const organizationId = requireOrganization(req, res);
+    if (!organizationId) return;
 
-    const {
-      formId,
-      groupId,
-      targetId,
-    } = req.body;
-
-    if (!formId || !groupId || !targetId) {
-      return res.status(400).json({
-        success: false,
-        message: "formId, groupId and targetId are required",
-      });
+    const { formId, groupId } = req.body;
+    if (!formId || !groupId) {
+      return res.status(400).json({ success: false, message: "formId and groupId are required" });
     }
 
-    // Validate form
-    const form = await FeedbackForm.findOne({
-      _id: formId,
-      organizationId,
-    });
+    const validation = await validateAssignment({ organizationId, formId, groupId });
+    if (validation.error) return res.status(400).json({ success: false, message: validation.error });
 
-    if (!form) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid feedback form",
-      });
-    }
-
-    // Validate group
-    const group = await Group.findOne({
-      _id: groupId,
-      organizationId,
-    });
-
-    if (!group) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid group",
-      });
-    }
-
-    // Validate target
-    const target = await Target.findOne({
-      _id: targetId,
-      organizationId,
-    });
-
-    if (!target) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid target",
-      });
-    }
-
-    // Prevent duplicate assignment
-    const existingAssignment = await Assignment.findOne({
-      organizationId,
-      formId,
-      groupId,
-      targetId,
-    });
-
-    if (existingAssignment) {
-      return res.status(409).json({
-        success: false,
-        message: "This form is already assigned to this group and target",
-      });
+    const existing = await Assignment.findOne({ organizationId, formId, groupId });
+    if (existing) {
+      return res.status(409).json({ success: false, message: "This form is already assigned to this group" });
     }
 
     const assignment = await Assignment.create({
       organizationId,
       formId,
       groupId,
-      targetId,
+      status: "ACTIVE",
+      assignedAt: new Date(),
     });
 
-    const populatedAssignment =
-      await Assignment.findById(assignment._id)
-        .populate("formId", "title status")
-        .populate("groupId", "name status")
-        .populate("targetId", "name type status");
+    const populated = await Assignment.findById(assignment._id)
+      .populate("formId", "title status startDate endDate responseMode allowMultipleResponses")
+      .populate("groupId", "name status");
 
-    return res.status(201).json({
-      success: true,
-      message: "Assignment created successfully",
-      assignment: populatedAssignment,
-    });
+    return res.status(201).json({ success: true, message: "Assignment created successfully", assignment: populated });
   } catch (error) {
     console.error("Create assignment error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    return res.status(500).json({ success: false, message: "Failed to create assignment" });
   }
 };
 
-
-// GET ALL ASSIGNMENTS
 const getAssignments = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
-
-    const filter = {
-      organizationId,
-    };
-
-    if (req.query.formId) {
-      filter.formId = req.query.formId;
-    }
-
-    if (req.query.groupId) {
-      filter.groupId = req.query.groupId;
-    }
-
-    if (req.query.targetId) {
-      filter.targetId = req.query.targetId;
-    }
-
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
+    const filter = req.organizationId ? { organizationId: req.organizationId } : {};
+    if (req.query.formId && isValidObjectId(req.query.formId)) filter.formId = req.query.formId;
+    if (req.query.groupId && isValidObjectId(req.query.groupId)) filter.groupId = req.query.groupId;
 
     const assignments = await Assignment.find(filter)
-      .populate("formId", "title status")
+      .populate("formId", "title status startDate endDate responseMode allowMultipleResponses")
       .populate("groupId", "name status")
-      .populate("targetId", "name type status")
       .sort({ createdAt: -1 });
 
-    return res.status(200).json({
-      success: true,
-      count: assignments.length,
-      assignments,
-    });
+    return res.status(200).json({ success: true, count: assignments.length, assignments });
   } catch (error) {
     console.error("Get assignments error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    return res.status(500).json({ success: false, message: "Failed to fetch assignments" });
   }
 };
 
-
-// GET ASSIGNMENT BY ID
 const getAssignmentById = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
-    const { id } = req.params;
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ success: false, message: "Invalid assignment ID" });
+    const filter = req.organizationId
+      ? { _id: req.params.id, organizationId: req.organizationId }
+      : { _id: req.params.id };
 
-    const assignment = await Assignment.findOne({
-      _id: id,
-      organizationId,
-    })
-      .populate("formId", "title description status")
-      .populate("groupId", "name description status")
-      .populate("targetId", "name type description status");
+    const assignment = await Assignment.findOne(filter)
+      .populate("formId", "title status startDate endDate responseMode allowMultipleResponses")
+      .populate("groupId", "name status");
 
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: "Assignment not found",
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      assignment,
-    });
+    if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+    return res.status(200).json({ success: true, assignment });
   } catch (error) {
     console.error("Get assignment error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    return res.status(500).json({ success: false, message: "Failed to fetch assignment" });
   }
 };
 
-
-// UPDATE ASSIGNMENT
 const updateAssignment = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
-    const { id } = req.params;
+    const organizationId = requireOrganization(req, res);
+    if (!organizationId) return;
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ success: false, message: "Invalid assignment ID" });
 
-    const {
+    const assignment = await Assignment.findOne({ _id: req.params.id, organizationId });
+    if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+
+    const formId = req.body.formId || getId(assignment.formId);
+    const groupId = req.body.groupId || getId(assignment.groupId);
+    const validation = await validateAssignment({ organizationId, formId, groupId });
+    if (validation.error) return res.status(400).json({ success: false, message: validation.error });
+
+    const duplicate = await Assignment.findOne({
+      organizationId,
       formId,
       groupId,
-      targetId,
-    } = req.body;
-
-    const assignment = await Assignment.findOne({
-      _id: id,
-      organizationId,
+      _id: { $ne: assignment._id },
     });
+    if (duplicate) return res.status(409).json({ success: false, message: "This form is already assigned to this group" });
 
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: "Assignment not found",
-      });
-    }
-
-    const newFormId = formId || assignment.formId;
-    const newGroupId = groupId || assignment.groupId;
-    const newTargetId = targetId || assignment.targetId;
-
-    // Validate form
-    const form = await FeedbackForm.findOne({
-      _id: newFormId,
-      organizationId,
-    });
-
-    if (!form) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid feedback form",
-      });
-    }
-
-    // Validate group
-    const group = await Group.findOne({
-      _id: newGroupId,
-      organizationId,
-    });
-
-    if (!group) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid group",
-      });
-    }
-
-    // Validate target
-    const target = await Target.findOne({
-      _id: newTargetId,
-      organizationId,
-    });
-
-    if (!target) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid target",
-      });
-    }
-
-    // Check duplicate assignment
-    const duplicate = await Assignment.findOne({
-      _id: { $ne: id },
-      organizationId,
-      formId: newFormId,
-      groupId: newGroupId,
-      targetId: newTargetId,
-    });
-
-    if (duplicate) {
-      return res.status(409).json({
-        success: false,
-        message: "This assignment already exists",
-      });
-    }
-
-    assignment.formId = newFormId;
-    assignment.groupId = newGroupId;
-    assignment.targetId = newTargetId;
-
+    assignment.formId = formId;
+    assignment.groupId = groupId;
     await assignment.save();
 
-    const updatedAssignment =
-      await Assignment.findById(assignment._id)
-        .populate("formId", "title status")
-        .populate("groupId", "name status")
-        .populate("targetId", "name type status");
+    const populated = await Assignment.findById(assignment._id)
+      .populate("formId", "title status startDate endDate responseMode allowMultipleResponses")
+      .populate("groupId", "name status");
 
-    return res.status(200).json({
-      success: true,
-      message: "Assignment updated successfully",
-      assignment: updatedAssignment,
-    });
+    return res.status(200).json({ success: true, message: "Assignment updated successfully", assignment: populated });
   } catch (error) {
     console.error("Update assignment error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    return res.status(500).json({ success: false, message: "Failed to update assignment" });
   }
 };
 
-
-// UPDATE ASSIGNMENT STATUS
 const updateAssignmentStatus = async (req, res) => {
   try {
-    const organizationId = req.user.organizationId;
-    const { id } = req.params;
+    const organizationId = requireOrganization(req, res);
+    if (!organizationId) return;
     const { status } = req.body;
+    if (!["ACTIVE", "INACTIVE"].includes(status)) return res.status(400).json({ success: false, message: "Invalid assignment status" });
 
-    if (!["ACTIVE", "INACTIVE"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Status must be ACTIVE or INACTIVE",
+    const assignment = await Assignment.findOne({ _id: req.params.id, organizationId });
+    if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+
+    if (status === "ACTIVE") {
+      const validation = await validateAssignment({
+        organizationId,
+        formId: assignment.formId,
+        groupId: assignment.groupId,
       });
-    }
-
-    const assignment = await Assignment.findOne({
-      _id: id,
-      organizationId,
-    });
-
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: "Assignment not found",
-      });
+      if (validation.error) return res.status(400).json({ success: false, message: validation.error });
     }
 
     assignment.status = status;
-
     await assignment.save();
-
-    return res.status(200).json({
-      success: true,
-      message: "Assignment status updated successfully",
-      assignment,
-    });
+    return res.status(200).json({ success: true, message: `Assignment ${status.toLowerCase()} successfully`, assignment });
   } catch (error) {
     console.error("Update assignment status error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    return res.status(500).json({ success: false, message: "Failed to update assignment status" });
   }
 };
-
 
 module.exports = {
   createAssignment,
